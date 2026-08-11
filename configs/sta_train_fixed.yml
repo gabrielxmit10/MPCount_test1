@@ -39,12 +39,12 @@ test_dataset:
     pre_resize: 1
 train_loader:
   batch_size: 16
-  num_workers: 16
+  num_workers: 2
   shuffle: True
   pin_memory: True
 val_loader: &val_loader_params
   batch_size: 1
-  num_workers: 4
+  num_workers: 2
   shuffle: False
   pin_memory: False
 test_loader: *val_loader_params
