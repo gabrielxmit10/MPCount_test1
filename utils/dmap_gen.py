@@ -113,5 +113,5 @@ if __name__ == '__main__':
         new_fns.append(fn)
     img_fns = new_fns
 
-    with Pool(8) as p:
+    with Pool(4) as p:
         r = list(tqdm(p.imap(run, img_fns), total=len(img_fns)))

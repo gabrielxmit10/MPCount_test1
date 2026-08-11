@@ -94,7 +94,7 @@ def generate_data_smartcity(im_path, min_size, max_size):
 def generate_data_sta(im_path, min_size, max_size):
     im = Image.open(im_path)
     im_w, im_h = im.size
-    name = im_path.split('/')[-1].split('.')[0]
+    name = os.path.basename(im_path).split('.')[0]
     mat_path = os.path.abspath(os.path.join(im_path, os.pardir, os.pardir, 'ground-truth', 'GT_' + name + '.mat'))
     points = loadmat(mat_path)['image_info'][0][0][0][0][0].astype(np.float32)
     idx_mask = (points[:, 0] >= 0) * (points[:, 0] <= im_w) * (points[:, 1] >= 0) * (points[:, 1] <= im_h)
@@ -266,7 +266,7 @@ def run_smartcity(origin_dir, save_dir, min_size, max_size):
             np.save(gd_save_path, points)
 
 def run_sta(origin_dir, save_dir, min_size, max_size):
-    if origin_dir.split('/')[-1] == 'part_A':
+    if os.path.basename(origin_dir) == 'part_A':
         part = 'sta'
     else:
         part = 'stb'
