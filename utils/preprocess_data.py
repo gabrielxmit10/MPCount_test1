@@ -95,7 +95,7 @@ def generate_data_sta(im_path, min_size, max_size):
     im = Image.open(im_path)
     im_w, im_h = im.size
     name = os.path.basename(im_path).split('.')[0]
-    mat_path = os.path.abspath(os.path.join(im_path, os.pardir, os.pardir, 'ground-truth', 'GT_' + name + '.mat'))
+    mat_path = os.path.abspath(os.path.join(im_path, os.pardir, os.pardir, 'ground_truth', 'GT_' + name + '.mat'))
     points = loadmat(mat_path)['image_info'][0][0][0][0][0].astype(np.float32)
     idx_mask = (points[:, 0] >= 0) * (points[:, 0] <= im_w) * (points[:, 1] >= 0) * (points[:, 1] <= im_h)
     points = points[idx_mask]
