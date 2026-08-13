@@ -1,7 +1,10 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import os
 import yaml
 import argparse
 
