@@ -1,0 +1,66 @@
+seed: 2023
+version: mdc_mpcount
+device: cuda:0
+output_dir: /content/mpcount_runs
+persistent_dir: null
+log_para: 1000
+patch_size: 512
+mode: final
+num_epochs: 180
+checkpoint: null
+resume_checkpoint: null
+
+model:
+  name: final
+  params:
+    pretrained: true
+    mem_size: 1024
+    mem_dim: 256
+    cls_thrs: 0.5
+    err_thrs: 0.5
+    den_dropout: 0.5
+    cls_dropout: 0.3
+    has_err_loss: false
+    deterministic: true
+
+train_dataset: &mdc_dataset
+  name: mdc_den_cls
+  params:
+    root: /content/mdc_data/MovingDroneCrowd++
+    crop_size: 320
+    downsample: 1
+    is_grey: false
+    unit_size: 16
+    pre_resize: 1.0
+    sigma: 4.0
+    density_radius: 7.0
+    clip_points: true
+
+val_dataset: *mdc_dataset
+test_dataset: *mdc_dataset
+
+train_loader:
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
+  pin_memory: true
+  persistent_workers: true
+val_loader: &eval_loader
+  batch_size: 1
+  num_workers: 2
+  shuffle: false
+  pin_memory: true
+  persistent_workers: true
+test_loader: *eval_loader
+
+optimizer:
+  name: adamw
+  params:
+    lr: 0.001
+    weight_decay: 0.0001
+scheduler:
+  name: onecycle
+  params:
+    max_lr: 0.001
+    final_div_factor: 1000
+

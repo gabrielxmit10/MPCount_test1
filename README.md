@@ -1,5 +1,9 @@
 # Single Domain Generalization for Crowd Counting
 
+> MovingDroneCrowd++ users: start with [COLAB_GUIDE.md](COLAB_GUIDE.md) and
+> `colab_mdc_mpcount.ipynb`. The implementation summary is in
+> [CHANGES_MDC_COLAB.md](CHANGES_MDC_COLAB.md).
+
 This is an official repository for our CVPR2024 work, "Single Domain Generalization for Crowd Counting". You can read our paper [here](https://arxiv.org/pdf/2403.09124.pdf).
 
 ## Requirements

@@ -9,8 +9,8 @@ from trainers.trainer import Trainer
 from utils.misc import denormalize, divide_img_into_patches
 
 class DGTrainer(Trainer):
-    def __init__(self, seed, version, device, log_para, patch_size, mode):
-        super().__init__(seed, version, device)
+    def __init__(self, seed, version, device, log_para, patch_size, mode, output_dir='logs', persistent_dir=None):
+        super().__init__(seed, version, device, output_dir=output_dir, persistent_dir=persistent_dir)
 
         self.log_para = log_para
         self.patch_size = patch_size
@@ -89,7 +89,7 @@ class DGTrainer(Trainer):
         h, w = img.shape[2:]
         ps = self.patch_size
         if h >= ps or w >= ps:
-            dmap = torch.zeros(1, 1, h, w)
+            dmap = torch.zeros(1, 1, h, w, device=img.device)
             img_patches, nh, nw = divide_img_into_patches(img, ps)
             for i in range(nh):
                 for j in range(nw):
@@ -107,8 +107,8 @@ class DGTrainer(Trainer):
         h, w = img.shape[2:]
         ps = self.patch_size
         if h >= ps or w >= ps:
-            dmap = torch.zeros(1, 1, h, w)
-            cmap = torch.zeros(1, 3, h//16, w//16)
+            dmap = torch.zeros(1, 1, h, w, device=img.device)
+            cmap = torch.zeros(1, 3, h//16, w//16, device=img.device)
             img_patches, nh, nw = divide_img_into_patches(img, ps)
             for i in range(nh):
                 for j in range(nw):
@@ -179,7 +179,7 @@ class DGTrainer(Trainer):
             optimizer.zero_grad()
             gts = gt_datas[1].to(self.device)
             losses = model(imgs1, gts=gts, apply_wtloss=(epoch>5))
-            loss_total = torch.FloatTensor([0]).cuda()
+            loss_total = torch.zeros(1, device=self.device)
             loss_total += losses[0]
             # loss_total += 0.4 * losses[1]
             if epoch > 5:
@@ -205,20 +205,30 @@ class DGTrainer(Trainer):
             pred_count = self.predict(model, img1)
         gt_count = gt.shape[1]
         mae = np.abs(pred_count - gt_count)
-        mse = (pred_count - gt_count) ** 2
+        squared_error = (pred_count - gt_count) ** 2
 
-        return mae, {'mse': mse}
+        return mae, {'squared_error': squared_error}
 
     def test_step(self, model, batch):
-        img1, _, gt, _, _ = batch
+        img1, _, gt, name, _ = batch
         img1 = img1.to(self.device)
         # img2 = img2.to(self.device)
 
         pred_count = self.predict(model, img1)
         gt_count = gt.shape[1]
         mae = np.abs(pred_count - gt_count)
-        mse = (pred_count - gt_count) ** 2
-        return {'mae': mae, 'mse': mse}
+        squared_error = (pred_count - gt_count) ** 2
+        sample_name = name[0] if isinstance(name, (list, tuple)) else str(name)
+        return {
+            'mae': mae,
+            'squared_error': squared_error,
+            '_detail': {
+                'name': sample_name,
+                'predicted_count': pred_count,
+                'ground_truth_count': gt_count,
+                'absolute_error': mae,
+            },
+        }
         
     def vis_step(self, model, batch):
         img1, img2, gt, name, _ = batch

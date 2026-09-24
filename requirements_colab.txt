@@ -1,5 +1,9 @@
 einops>=0.8.0
+matplotlib>=3.8
+numpy>=1.26
+Pillow>=10.0
 PyYAML>=6.0
-scipy
-tqdm
-opencv-python
+rich>=13.7
+scipy>=1.11
+tqdm>=4.66
+# Deliberately do not install torch/torchvision here: use Colab's matched GPU build.

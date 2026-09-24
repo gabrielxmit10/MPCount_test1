@@ -1,133 +1,260 @@
-import sys
+"""Config-driven MPCount training, validation, testing, and visualization."""
+
+from __future__ import annotations
+
+import argparse
+import copy
 import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import shutil
+import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 import yaml
-import argparse
+from torch.utils.data import DataLoader
 
-from trainers.dgtrainer import DGTrainer
-from models.models import DGModel_base, DGModel_mem, DGModel_memadd, DGModel_cls, DGModel_memcls, DGModel_final
-from datasets.den_dataset import DensityMapDataset
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from datasets.den_cls_dataset import DenClsDataset
-from datasets.jhu_domain_dataset import JHUDomainDataset
-from datasets.jhu_domain_cls_dataset import JHUDomainClsDataset
-from utils.misc import seed_worker, get_seeded_generator, seed_everything
+from datasets.den_dataset import DensityMapDataset
+from datasets.mdc_dataset import MDCDenClsDataset
+from models.models import (
+    DGModel_base,
+    DGModel_cls,
+    DGModel_final,
+    DGModel_mem,
+    DGModel_memadd,
+    DGModel_memcls,
+)
+from trainers.dgtrainer import DGTrainer
+from utils.misc import get_seeded_generator, seed_everything, seed_worker
+
 
 def get_model(name, params):
-    if name == 'base':
-        return DGModel_base(**params)
-    elif name == 'mem':
-        return DGModel_mem(**params)
-    elif name == 'memadd':
-        return DGModel_memadd(**params)
-    elif name == 'cls':
-        return DGModel_cls(**params)
-    elif name == 'memcls':
-        return DGModel_memcls(**params)
-    elif name == 'final':
-        return DGModel_final(**params)
+    models = {
+        "base": DGModel_base,
+        "mem": DGModel_mem,
+        "memadd": DGModel_memadd,
+        "cls": DGModel_cls,
+        "memcls": DGModel_memcls,
+        "final": DGModel_final,
+    }
+    if name not in models:
+        raise ValueError(f"Unknown model: {name}")
+    return models[name](**params)
+
 
 def get_loss():
     return nn.MSELoss()
 
+
 def get_dataset(name, params, method):
-    if name == 'den':
-        dataset = DensityMapDataset(method=method, **params)
-        collate = DensityMapDataset.collate
-    elif name == 'den_cls':
-        dataset = DenClsDataset(method=method, **params)
-        collate = DenClsDataset.collate
-    elif name == 'jhu_domain':
-        dataset = JHUDomainDataset(method=method, **params)
-        collate = JHUDomainDataset.collate
-    elif name == 'jhu_domain_cls':
-        dataset = JHUDomainClsDataset(method=method, **params)
-        collate = JHUDomainClsDataset.collate
-    else:
-        raise ValueError('Unknown dataset: {}'.format(name))
-    return dataset, collate
+    datasets = {
+        "den": DensityMapDataset,
+        "den_cls": DenClsDataset,
+        "mdc_den_cls": MDCDenClsDataset,
+    }
+    if name == "jhu_domain":
+        from datasets.jhu_domain_dataset import JHUDomainDataset
+
+        datasets[name] = JHUDomainDataset
+    elif name == "jhu_domain_cls":
+        from datasets.jhu_domain_cls_dataset import JHUDomainClsDataset
+
+        datasets[name] = JHUDomainClsDataset
+    if name not in datasets:
+        raise ValueError(f"Unknown dataset: {name}")
+    dataset_type = datasets[name]
+    dataset = dataset_type(method=method, **params)
+    return dataset, dataset_type.collate
+
 
 def get_optimizer(name, params, model):
-    if name == 'sgd':
-        return torch.optim.SGD(model.parameters(), **params)
-    elif name == 'adam':
-        return torch.optim.Adam(model.parameters(), **params)
-    elif name == 'adamw':
-        return torch.optim.AdamW(model.parameters(), **params)
-    else:
-        raise ValueError('Unknown optimizer: {}'.format(name))
+    optimizers = {
+        "sgd": torch.optim.SGD,
+        "adam": torch.optim.Adam,
+        "adamw": torch.optim.AdamW,
+    }
+    if name not in optimizers:
+        raise ValueError(f"Unknown optimizer: {name}")
+    return optimizers[name](model.parameters(), **params)
+
 
 def get_scheduler(name, params, optimizer):
-    if name == 'step':
-        return torch.optim.lr_scheduler.StepLR(optimizer, **params)
-    elif name == 'multistep':
-        return torch.optim.lr_scheduler.MultiStepLR(optimizer, **params)
-    elif name == 'cosine':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
-    elif name == 'plateau':
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
-    elif name == 'onecycle':
-        return torch.optim.lr_scheduler.OneCycleLR(optimizer, **params)
-    else:
-        raise ValueError('Unknown scheduler: {}'.format(name))
+    schedulers = {
+        "step": torch.optim.lr_scheduler.StepLR,
+        "multistep": torch.optim.lr_scheduler.MultiStepLR,
+        "cosine": torch.optim.lr_scheduler.CosineAnnealingLR,
+        "plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
+        "onecycle": torch.optim.lr_scheduler.OneCycleLR,
+    }
+    if name in {None, "none"}:
+        return None
+    if name not in schedulers:
+        raise ValueError(f"Unknown scheduler: {name}")
+    return schedulers[name](optimizer, **params)
 
-def load_config(config_path, task):
-    with open(config_path, 'r') as f:
-        cfg = yaml.load(f, Loader=yaml.FullLoader)
 
-    init_params = {}
-    task_params = {}
+def _expand_environment(value):
+    if isinstance(value, dict):
+        return {key: _expand_environment(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_environment(item) for item in value]
+    if isinstance(value, str):
+        return os.path.expanduser(os.path.expandvars(value))
+    return value
 
-    init_params['seed'] = cfg['seed']
-    init_params['version'] = cfg['version']
-    init_params['device'] = cfg['device']
-    init_params['log_para'] = cfg['log_para']
-    init_params['patch_size'] = cfg['patch_size']
-    init_params['mode'] = cfg['mode']
 
-    seed_everything(cfg['seed'])
+def _apply_overrides(cfg, args):
+    cfg = copy.deepcopy(cfg)
+    if args.data_root:
+        for section in ("train_dataset", "val_dataset", "test_dataset"):
+            if section in cfg:
+                cfg[section]["params"]["root"] = args.data_root
+    if args.checkpoint is not None:
+        cfg["checkpoint"] = None if args.checkpoint.lower() == "none" else args.checkpoint
+    if args.run_name:
+        cfg["version"] = args.run_name
+    if args.device:
+        cfg["device"] = args.device
+    if args.output_dir:
+        cfg["output_dir"] = args.output_dir
+    if args.persistent_dir:
+        cfg["persistent_dir"] = args.persistent_dir
+    if args.num_epochs is not None:
+        cfg["num_epochs"] = args.num_epochs
+    if args.batch_size is not None and "train_loader" in cfg:
+        cfg["train_loader"]["batch_size"] = args.batch_size
+    if args.crop_size is not None:
+        for section in ("train_dataset", "val_dataset", "test_dataset"):
+            if section in cfg:
+                cfg[section]["params"]["crop_size"] = args.crop_size
+    if args.learning_rate is not None and "optimizer" in cfg:
+        cfg["optimizer"]["params"]["lr"] = args.learning_rate
+        if cfg.get("scheduler", {}).get("name") == "onecycle":
+            cfg["scheduler"]["params"]["max_lr"] = args.learning_rate
+    if args.num_workers is not None:
+        for section in ("train_loader", "val_loader", "test_loader"):
+            if section in cfg:
+                cfg[section]["num_workers"] = args.num_workers
+                if args.num_workers == 0:
+                    cfg[section]["persistent_workers"] = False
+    if args.patch_size is not None:
+        cfg["patch_size"] = args.patch_size
+    if getattr(args, "pretrained", None) is not None:
+        cfg["model"]["params"]["pretrained"] = args.pretrained
+    if getattr(args, "deterministic", None) is not None:
+        cfg["model"]["params"]["deterministic"] = args.deterministic
+    if args.eval_split and "test_dataset" in cfg:
+        cfg["test_dataset"]["params"]["split_file"] = args.eval_split
+    return _expand_environment(cfg)
 
-    task_params['model'] = get_model(cfg['model']['name'], cfg['model']['params'])
 
-    task_params['checkpoint'] = cfg['checkpoint']
+def load_config(config_path, task, args):
+    with open(config_path, "r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+    cfg = _apply_overrides(cfg, args)
 
-    generator = get_seeded_generator(cfg['seed'])
+    init_params = {
+        "seed": cfg["seed"],
+        "version": cfg["version"],
+        "device": cfg["device"],
+        "log_para": cfg["log_para"],
+        "patch_size": cfg["patch_size"],
+        "mode": cfg["mode"],
+        "output_dir": cfg.get("output_dir", "logs"),
+        "persistent_dir": cfg.get("persistent_dir"),
+    }
+    task_params = {
+        "model": get_model(cfg["model"]["name"], cfg["model"]["params"]),
+        "checkpoint": cfg.get("checkpoint"),
+    }
 
-    if task == 'train' or task == 'train_test':
-        task_params['loss'] = get_loss()
-        train_dataset, collate = get_dataset(cfg['train_dataset']['name'], cfg['train_dataset']['params'], method='train')
-        task_params['train_dataloader'] = DataLoader(train_dataset, collate_fn=collate, **cfg['train_loader'], worker_init_fn=seed_worker, generator=generator)
-        val_dataset, _ = get_dataset(cfg['val_dataset']['name'], cfg['val_dataset']['params'], method='val')
-        task_params['val_dataloader'] = DataLoader(val_dataset, **cfg['val_loader'])
-        task_params['optimizer'] = get_optimizer(cfg['optimizer']['name'], cfg['optimizer']['params'], task_params['model'])
-        task_params['scheduler'] = get_scheduler(cfg['scheduler']['name'], cfg['scheduler']['params'], task_params['optimizer'])
-        task_params['num_epochs'] = cfg['num_epochs']
+    seed_everything(cfg["seed"])
+    generator = get_seeded_generator(cfg["seed"])
 
-    if task != 'train':
-        test_dataset, _ = get_dataset(cfg['test_dataset']['name'], cfg['test_dataset']['params'], method='test')
-        task_params['test_dataloader'] = DataLoader(test_dataset, **cfg['test_loader'])
+    if task in {"train", "train_test"}:
+        task_params["loss"] = get_loss()
+        train_dataset, collate = get_dataset(
+            cfg["train_dataset"]["name"], cfg["train_dataset"]["params"], method="train"
+        )
+        task_params["train_dataloader"] = DataLoader(
+            train_dataset,
+            collate_fn=collate,
+            worker_init_fn=seed_worker,
+            generator=generator,
+            **cfg["train_loader"],
+        )
+        val_dataset, _ = get_dataset(
+            cfg["val_dataset"]["name"], cfg["val_dataset"]["params"], method="val"
+        )
+        task_params["val_dataloader"] = DataLoader(val_dataset, **cfg["val_loader"])
+        task_params["optimizer"] = get_optimizer(
+            cfg["optimizer"]["name"], cfg["optimizer"]["params"], task_params["model"]
+        )
+        scheduler_params = copy.deepcopy(cfg["scheduler"].get("params", {}))
+        if cfg["scheduler"]["name"] == "onecycle":
+            scheduler_params["epochs"] = cfg["num_epochs"]
+            scheduler_params["steps_per_epoch"] = len(task_params["train_dataloader"])
+        task_params["scheduler"] = get_scheduler(
+            cfg["scheduler"]["name"], scheduler_params, task_params["optimizer"]
+        )
+        task_params["num_epochs"] = cfg["num_epochs"]
+        task_params["resume_checkpoint"] = args.resume_checkpoint or cfg.get("resume_checkpoint")
 
-    return init_params, task_params
+    if task != "train":
+        test_dataset, _ = get_dataset(
+            cfg["test_dataset"]["name"], cfg["test_dataset"]["params"], method="test"
+        )
+        task_params["test_dataloader"] = DataLoader(test_dataset, **cfg["test_loader"])
 
-if __name__ == '__main__':
+    return cfg, init_params, task_params
+
+
+def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/dg.yaml', help='path to config file')
-    parser.add_argument('--task', type=str, default='train', choices=['train', 'test', 'vis'], help='task to perform')
-    args = parser.parse_args()
+    parser.add_argument("--config", default="configs/mdc_train.yml", help="YAML configuration file")
+    parser.add_argument("--task", default="train", choices=["train", "test", "vis", "train_test"])
+    parser.add_argument("--data-root", help="Override every dataset root")
+    parser.add_argument("--checkpoint", help="Model weights; pass 'none' for random initialization")
+    parser.add_argument("--resume-checkpoint", help="Full last_resume.pth state for interrupted training")
+    parser.add_argument("--output-dir", help="Fast/local parent directory for run outputs")
+    parser.add_argument("--persistent-dir", help="Optional Drive parent directory synced each epoch")
+    parser.add_argument("--run-name", help="Override the run/version name")
+    parser.add_argument("--device", help="For example cuda:0 or cpu")
+    parser.add_argument("--num-epochs", type=int)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--crop-size", type=int, help="Override the training crop size")
+    parser.add_argument("--learning-rate", type=float, help="Override optimizer LR and OneCycle max LR")
+    parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--patch-size", type=int, help="Evaluation patch size")
+    parser.add_argument("--eval-split", help="Split file used by the test dataset, e.g. val.txt or test.txt")
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=None)
+    return parser.parse_args()
 
-    init_params, task_params = load_config(args.config, args.task)
 
+def main():
+    args = parse_args()
+    cfg, init_params, task_params = load_config(args.config, args.task, args)
     trainer = DGTrainer(**init_params)
-    os.system(f'cp {args.config} {trainer.log_dir}')
+    copied_config = Path(trainer.log_dir) / Path(args.config).name
+    shutil.copy2(args.config, copied_config)
+    with (Path(trainer.log_dir) / "resolved_config.yml").open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(cfg, handle, sort_keys=False)
 
-    if args.task == 'train':
+    if args.task == "train":
         trainer.train(**task_params)
-    elif args.task == 'test':
+    elif args.task == "test":
         trainer.test(**task_params)
-    elif args.task == 'vis':
+    elif args.task == "vis":
         trainer.vis(**task_params)
-    else:
-        raise ValueError('Unknown task: {}'.format(args.task))
+    elif args.task == "train_test":
+        test_loader = task_params.pop("test_dataloader")
+        trainer.train(**task_params)
+        trainer.test(task_params["model"], test_loader, str(Path(trainer.log_dir) / "best.pth"))
+
+
+if __name__ == "__main__":
+    main()
